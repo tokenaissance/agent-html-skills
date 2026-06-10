@@ -1,6 +1,6 @@
 ---
 name: html-data-explorer
-description: Build HTML data explorers for CSV, JSON, log, and event data — filterable tables, faceted search, inline charts, timeline scrubbing, A/B test result dashboards. Use whenever the user has a dataset to explore, browse, filter, chart, facet, or analyze — especially for ad-hoc analysis where opening a heavy BI tool is overkill. Reach for this when the user pastes data, mentions a CSV/JSON/log file, or asks to "look at" or "analyze" a dataset.
+description: Build HTML data explorers for CSV, JSON, log, and event data — filterable tables, faceted search, inline charts, timeline scrubbing, A/B test result dashboards. Use whenever the user has a dataset to explore, browse, filter, chart, facet, or analyze — especially for ad-hoc analysis where opening a heavy BI tool is overkill. Reach for this when the user pastes data, mentions a CSV/JSON/log file, or asks to "look at" or "analyze" a dataset. Always runs a secret-redaction pass before embedding data — credential-shaped values (API keys, tokens, cookies, passwords) are replaced with placeholders unless the user explicitly opts in to embedding them.
 ---
 
 # HTML Data Explorer
@@ -18,9 +18,27 @@ For ad-hoc data exploration — a CSV someone pasted, a JSON dump from an API, a
 
 ## Output requirements
 
-Data baked into the file as a JS object/array — no separate file to load, no fetch call. Filtering and charting happens entirely in the browser. Pre-aggregated views update live as filters apply.
+Data baked into the file as a JS object/array — no separate file to load, no fetch call. Embed the data only after the mandatory secret-redaction pass below — the artifact is built to be shared, so everything baked in travels with it, including rows and columns the current filter hides. Filtering and charting happens entirely in the browser. Pre-aggregated views update live as filters apply.
 
-If the dataset is large enough that inlining is awkward (>~5MB), still inline it but warn the user about file size; otherwise the artifact loses its "just send the link" superpower.
+If the dataset is large enough that inlining is awkward (>~5MB), still inline it but warn the user about file size — and that the file carries the full dataset, including filtered-out rows; otherwise the artifact loses its "just send the link" superpower.
+
+## Redact secrets before embedding (mandatory)
+
+The artifact embeds the **full dataset** in page source — filters hide rows from view, not from the file, and a shared link ships all of it. Logs and API dumps routinely carry Authorization headers, cookies, and keys. For anything beyond a trivially small dataset, run the scan programmatically — a script/regex pass over every row — never by reading or sampling rows manually; a sample-based scan misses the one row that matters. Before baking data in:
+
+1. **Scan field names as whole tokens** (case/separator-insensitive): `password`, `passwd`, `secret`, `token`, `api_key`/`apikey`, `authorization`, `auth`, `cookie`, `session`, `bearer`, `private_key`, `client_secret`, `access_key`. Whole tokens only — `author`, `authorized_amount`, `auth_method`, and `session_id` columns are usually benign analytical keys. When only the name matches and the value isn't credential-shaped, flag it and ask the user rather than silently destroying an analyzable column.
+2. **Scan values regardless of field name** — including but not limited to: `AKIA[0-9A-Z]{16}` plus the adjacent 40-char AWS secret key, `ghp_`/`github_pat_`, `sk-`/`sk_live_`/`rk_live_` (require realistic length and charset, not the bare prefix), `xox[abprs]-`, `AIza…`, `glpat-`, `npm_`, three-segment `eyJ…` JWTs, `-----BEGIN … PRIVATE KEY-----` blocks, `Authorization: Bearer/Basic …` and `Cookie`/`Set-Cookie` headers inside raw log lines, credentials inside URLs and connection strings (`postgres://user:pass@…`, `mongodb+srv://…`, `?api_key=`, `?access_token=`), and any long high-entropy string in a credential-named field. Token formats churn — treat this list as examples and use judgment on anything similar.
+3. **Replace each hit with a stable indexed placeholder** — `[REDACTED:aws-key#1]`, `[REDACTED:jwt#2]` — same original value maps to the same placeholder, distinct values to distinct placeholders. Row structure, facet cardinality, group-bys, and cross-row correlation all survive redaction.
+4. **Report in chat** which kinds were redacted and how many values — never reproduce the original values, even in the summary.
+5. **Verbatim embedding is an explicit opt-in.** Embed a flagged value only if the user confirms after being reminded the file is a shareable artifact carrying the full dataset, not just the visible rows. (Legitimate case: the dataset under analysis *is* a list of leaked keys. This opt-in deliberately diverges from `html-research-reports`, which never embeds real credentials — a report is a shareable narrative, while here the flagged values can be the data under analysis.)
+6. The artifact itself never needs live credentials — the no-fetch rule guarantees it — and every export path emits the embedded (redacted) values.
+7. **Verify the emitted file before declaring it done** — after writing the `.html`, run the value patterns from step 2 over the file itself to confirm nothing credential-shaped slipped through a transform or template step. A ready-made starting point (extend it with whichever step-2 patterns your dataset actually hit):
+
+   ```
+   grep -nE 'AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|gh[po]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20}|npm_[A-Za-z0-9]{36}|xox[abprse]-|sk-[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|eyJ[A-Za-z0-9_-]{20,}\.|[?&](api_key|access_token|token|sig|X-Amz-Signature)=[^<&[]|://[^/[:space:]:@]+:[^@[:space:]<[&][^@[:space:]<]*@' <file>.html
+   ```
+
+   No output is the pass condition; review any hit that isn't a `[REDACTED:…]` placeholder.
 
 ## HTML output foundation
 
@@ -41,7 +59,7 @@ These defaults apply to **every** artifact this skill produces, on top of the re
 
 ## Core structure
 
-1. **Header** — what dataset this is, row count, time range covered (if temporal)
+1. **Header** — what dataset this is, row count, time range covered (if temporal), and a disclosure that the full dataset of N rows is embedded in this file — filters change the view, not the file
 2. **Filter bar** — facets/filters that narrow the data
 3. **Summary panel** — counts and aggregates that update as filters apply
 4. **Main view** — table, chart, or both (often both)
@@ -88,7 +106,7 @@ Avoid: Plotly (too heavy for ad-hoc), enterprise BI libs (overkill).
 - Filters update results live — no "Apply" button
 - Show active filter count near the filter bar
 - Always visible "Clear all filters" button
-- Persist filter state in URL hash so the user can bookmark/share a specific view
+- Persist filter state in URL hash so the user can bookmark/share a specific view — but remember a shared "view" link still ships the entire embedded dataset, and the hash must carry only placeholder forms for redacted fields, never raw values
 
 ## Export
 
@@ -99,9 +117,12 @@ The user explored, they found something — make it easy to take it back to the 
 - **Copy as natural-language summary** ("Found 47 failed payments between Apr 1–7, mostly from EU region")
 - **Copy chart as SVG / PNG** for pasting into reports
 
+All exports operate on the redacted dataset — copy buttons emit the embedded placeholder values; originals were redacted before embed and don't exist in the file.
+
 ## Anti-patterns
 
 - Loading data from a separate file. Defeats the "send the link" property.
+- Embedding credential-bearing fields verbatim. Logs and API dumps routinely carry Authorization headers, cookies, and API keys — and the full dataset lives in page source even when filtered out of view. Run the redaction pass first.
 - Filtering that requires an Apply button. Live filtering is the whole point.
 - Forgetting the row count. The first thing a data person wants to know.
 - Silent truncation of large datasets. Tell the user explicitly: "showing first 500 of 12,408 rows".
@@ -111,4 +132,4 @@ The user explored, they found something — make it easy to take it back to the 
 
 > Here's our payment failure log for last week [pasted CSV, 4000 rows]. Build me an HTML explorer — filters by region, error code, processor, and time range. A timeline chart at top showing failures per hour. Table below with click-to-expand details. Copy-as-SQL button.
 
-Output: HTML file with the 4000 rows baked in, a filter bar (4 facets), a timeline chart at top with brushable selection, filterable/sortable table below, click-to-expand row detail, summary stats at top updating with filters, and a copy-as-SQL button.
+Output: HTML file with the 4000 rows baked in (after the mandatory secret-redaction pass — payment logs often carry processor tokens), a filter bar (4 facets), a timeline chart at top with brushable selection, filterable/sortable table below, click-to-expand row detail, summary stats at top updating with filters, and a copy-as-SQL button.

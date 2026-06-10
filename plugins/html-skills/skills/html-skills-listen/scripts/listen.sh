@@ -78,8 +78,10 @@ if ! kill -0 "$PID" 2>/dev/null; then
   exit 1
 fi
 
-# Parse the chosen URL out of the receiver's log.
-URL=$(grep -oE 'listening on http://127\.0\.0\.1:[0-9]+/' "$LOGF" | tail -1 \
+# Parse the chosen URL out of the receiver's log. The URL carries the
+# per-session auth token as its `?t=` query string — capture it whole; the
+# receiver rejects any POST that doesn't present the token.
+URL=$(grep -oE 'listening on http://127\.0\.0\.1:[0-9]+/\?t=[^[:space:]]+' "$LOGF" | tail -1 \
       | sed 's/listening on //')
 if [ -z "$URL" ]; then
   echo "STATUS=ERROR"

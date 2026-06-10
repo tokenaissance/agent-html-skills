@@ -17,6 +17,16 @@
 //     skips the fallbacks and leaves the user with "can't copy" UX in
 //     contexts where the modern API rejects.
 //
+//   submitToClaude(payload, { redactSecrets: true }) — opt-in, off by
+//     default. Strips high-confidence credential patterns (PEM private
+//     keys, AKIA…, ghp_/gho_…, xox…-, sk-…, AIza…, eyJ… JWTs,
+//     scheme://user:pass@ URLs) from the serialized payload before
+//     sending/copying, replacing each with a re-joinable
+//     '{{REDACTED:<type>:…<last4>}}' marker and showing a visible notice.
+//     Intended for config/env-shaped editors (see html-throwaway-editor's
+//     "Secrets are never embedded" rule, which is the primary defense —
+//     this is a last net, not the masking step).
+//
 // Clipboard mode tries the modern Promise API first; if that rejects (file://
 // restrictions in Safari, iframe Permissions-Policy, etc.) it falls back to
 // the legacy document.execCommand('copy') path which works in many of those
@@ -29,9 +39,53 @@
 //   { skill: "html-<name>", kind: "<artifact-kind>", data: <...>, version: 1 }
 
 (function () {
+  // Opt-in payload redaction (opts.redactSecrets) — deliberately narrow.
+  // This handler is shared by every html-skills artifact, so only
+  // high-confidence credential patterns are stripped; fuzzy heuristics
+  // (entropy guesses, "token"-ish key names) would corrupt legitimate
+  // payloads from other skills (design tokens, hashes, dataset rows).
+  // Each match becomes a re-joinable '{{REDACTED:<type>:…<last4>}}' marker
+  // the agent can restore from the original source, and a visible notice
+  // reports the count — never silent mutation.
+  const SECRET_PATTERNS = [
+    ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----/g],
+    ['aws-key-id', /\bAKIA[0-9A-Z]{16}\b/g],
+    ['github-token', /\bgh[opsur]_[A-Za-z0-9]{20,}\b/g],
+    ['slack-token', /\bxox[abprse]-[A-Za-z0-9-]{10,}\b/g],
+    ['openai-key', /\bsk-[A-Za-z0-9_-]{20,}\b/g],
+    ['google-key', /\bAIza[0-9A-Za-z_-]{30,}\b/g],
+    ['jwt', /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g],
+    ['url-userinfo', /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@"']+:[^\s/@"']+@/gi],
+  ];
+
+  function redactKnownSecrets(json) {
+    let count = 0;
+    for (const pair of SECRET_PATTERNS) {
+      json = json.replace(pair[1], function (m) {
+        count++;
+        // url-userinfo matches end inside the password — there is no safe
+        // last-4 preview for passwords, so emit a fixed marker instead.
+        if (pair[0] === 'url-userinfo') return '{{REDACTED:url-userinfo}}';
+        return '{{REDACTED:' + pair[0] + ':…' + m.slice(-4) + '}}';
+      });
+    }
+    return { json: json, count: count };
+  }
+
   async function submitToClaude(payload, opts) {
     opts = opts || {};
-    const json = JSON.stringify(payload, null, 2);
+    let json = JSON.stringify(payload, null, 2);
+    let note = '';
+
+    if (opts.redactSecrets) {
+      const red = redactKnownSecrets(json);
+      if (red.count > 0) {
+        json = red.json;
+        note = ' (' + red.count + ' secret-looking value'
+          + (red.count === 1 ? '' : 's') + ' redacted)';
+      }
+    }
+
     const url = opts.url || window.__CLAUDE_SUBMIT_URL__;
 
     if (url) {
@@ -42,22 +96,22 @@
           body: json,
         });
         if (r.ok) {
-          notify(opts, opts.serverMessage
+          notify(opts, (opts.serverMessage
             || window.__CLAUDE_SERVER_MESSAGE__
-            || 'Submitted to Claude.');
+            || 'Submitted to Claude.') + note);
           return 'server';
         }
       } catch (e) {
         // Fall through to clipboard.
       }
     }
-    return clipboardSubmit(json, opts);
+    return clipboardSubmit(json, opts, note);
   }
 
-  async function clipboardSubmit(json, opts) {
-    const msg = opts.clipboardMessage
+  async function clipboardSubmit(json, opts, note) {
+    const msg = (opts.clipboardMessage
       || window.__CLAUDE_CLIPBOARD_MESSAGE__
-      || 'Copied to clipboard — paste back into Claude.';
+      || 'Copied to clipboard — paste back into Claude.') + (note || '');
     return copyToClipboard(json, { ...opts, message: msg, returnTag: 'clipboard' });
   }
 
