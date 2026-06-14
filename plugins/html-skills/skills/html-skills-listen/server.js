@@ -15,7 +15,7 @@
  *     `"method":"notifications/claude/channel"`, and turns each
  *     submission into a session notification for the agent.
  *   - Security: binds to loopback only, and every POST must present the
- *     per-session random token (generated at startup, carried as `?t=` in
+ *     per-session random loopback nonce (generated at startup, carried as `?t=` in
  *     the URL handed to the artifact). Requests without the token are
  *     rejected with 403 and never forwarded, so other web pages or local
  *     processes can't forge submissions into the session. Bodies are
@@ -41,7 +41,7 @@ const crypto = require('node:crypto');
 const PORT = parseInt(process.env.HTML_SKILLS_CHANNEL_PORT || '0', 10);
 const HOST = '127.0.0.1';
 
-// Per-session submit token. Every POST must present it (as the `?t=` query
+// Per-session loopback handshake nonce (not a credential or external secret). Every POST must present it (as the `?t=` query
 // string, or an `X-HTML-Skills-Token` header). It travels inside the URL the
 // agent injects as `window.__CLAUDE_SUBMIT_URL__`, so legitimate artifacts
 // present it automatically; a request without it is rejected before anything
