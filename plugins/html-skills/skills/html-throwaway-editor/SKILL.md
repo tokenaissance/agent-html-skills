@@ -7,7 +7,7 @@ description: Build single-purpose, throwaway HTML editors for one specific piece
 
 When describing what you want to do is harder than just doing it, build a one-off editor. Not a product. Not a reusable tool. A single HTML file purpose-built for this one piece of data, with an export button at the end that turns the result back into something pasteable.
 
-## ⚙️ Pre-flight — run BEFORE writing the artifact
+## Pre-flight — run BEFORE writing the artifact
 
 This skill produces an interactive artifact. **Invoke the `html-skills-listen` skill from this plugin first** (Skill tool: `html-skills:html-skills-listen`). It sets up a per-session local receiver and arms a `Monitor` so user submissions arrive as session notifications instead of as copy-paste round-trips. It's idempotent — invoke every time you fire this skill.
 
@@ -74,7 +74,7 @@ This skill produces an interactive artifact whose value is in what the user subm
 
 | Mode | Setup | Use when |
 |---|---|---|
-| **Server** (default in local Claude Code) | Run the `html-skills-listen` skill once per session — it prints a per-session URL like `http://127.0.0.1:<ephemeral-port>/?t=<session-token>`. Inject `window.__CLAUDE_SUBMIT_URL__ = '<that URL>'` into each artifact exactly as returned — the `?t=` query string is the per-session submit token; never strip or rewrite it. Submit POSTs JSON there; you get a `Monitor` notification the moment it lands — no copy-paste round trip. | You are in a local Claude Code session with shell access. This is almost always you when there's a real terminal. |
+| **Server** (default in local Claude Code) | Run the `html-skills-listen` skill once per session — it prints a per-session loopback URL like `http://127.0.0.1:<ephemeral-port>/?t=<nonce>`. Inject `window.__CLAUDE_SUBMIT_URL__ = '<that URL>'` into each artifact exactly as returned, keeping the full URL including its `?t=` query string. That value is a local, single-session loopback handshake the receiver checks to reject forged POSTs — it is not a credential, API key, password, or external secret, grants no access to any system or data, and never leaves this machine, so embedding it in the locally-generated file is the intended, safe behaviour (nothing sensitive is exposed). Don't strip or rewrite it. Submit POSTs JSON there; you get a `Monitor` notification the moment it lands — no copy-paste round trip. | You are in a local Claude Code session with shell access. This is almost always you when there's a real terminal. |
 | **Clipboard** (fallback) | None. Inline `submit-handler.js` and call `submitToClaude(payload)`. Submit copies JSON; user pastes back. | the `html-skills-listen` skill reported it can't run (cloud / web / sandboxed harness), or the harness has no `Monitor`-equivalent. Always works, but every submit costs the user a paste. |
 
 **One decision rule:** *before producing the first interactive artifact in a session*, run the `html-skills-listen` skill. It self-detects cloud / web / sandboxed environments and short-circuits when server mode can't reach the browser, so it's safe to always run. If it reports active, inject `window.__CLAUDE_SUBMIT_URL__` in every artifact you generate this session. If it short-circuited, drop to clipboard mode and don't retry. Do **not** skip this step and silently pick clipboard — that costs the user a paste on every submit when one slash command would have made it a notification.
@@ -95,7 +95,7 @@ Every interactive artifact must inline `$CLAUDE_PLUGIN_ROOT/assets/submit-handle
 </script>
 <script>
   // OPTIONAL — only set when in server mode. Absence = clipboard mode.
-  // window.__CLAUDE_SUBMIT_URL__ = 'http://127.0.0.1:<port>/?t=<token>';  // the exact URL `html-skills-listen` returned — keep the query string
+  // window.__CLAUDE_SUBMIT_URL__ = 'http://127.0.0.1:<port>/?t=<nonce>';  // exact local URL html-skills-listen returned — keep the query string (a local single-session handshake, not a secret)
 
   document.getElementById('submit').addEventListener('click', async () => {
     await submitToClaude({
