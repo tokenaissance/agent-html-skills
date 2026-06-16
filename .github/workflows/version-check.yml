@@ -1,0 +1,60 @@
+name: version-check
+
+# Enforces the rule in CLAUDE.md: any change under plugins/html-skills/ must bump the
+# plugin version and update the changelog. Always runs (so it can be a required check);
+# it only *enforces* when versionable plugin files actually changed.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  version-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a version bump + changelog when the plugin changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          PLUGIN=plugins/html-skills/.claude-plugin/plugin.json
+          CHANGELOG=plugins/html-skills/CHANGELOG.md
+
+          # Versionable changes = anything under plugins/html-skills/ except the changelog
+          # itself (editing the changelog alone shouldn't force a bump).
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- plugins/html-skills/ \
+                    | grep -v "^${CHANGELOG}\$" || true)
+          if [ -z "$changed" ]; then
+            echo "No versionable plugin changes in this PR — nothing to enforce."
+            exit 0
+          fi
+          echo "Versionable changes detected:"
+          echo "$changed" | sed 's/^/  - /'
+
+          base_ver=$(git show "$BASE_SHA:$PLUGIN" | jq -r .version)
+          head_ver=$(git show "$HEAD_SHA:$PLUGIN" | jq -r .version)
+          echo "plugin.json version: $base_ver -> $head_ver"
+
+          if [ "$base_ver" = "$head_ver" ]; then
+            echo "::error file=${PLUGIN}::plugins/html-skills changed but the version is still ${head_ver}. Bump it (minor x.Y.0 for new skills/behaviour, patch x.y.Z for small fixes) and update the CHANGELOG. See CLAUDE.md."
+            exit 1
+          fi
+
+          # New version must be strictly higher (semver-ordered).
+          highest=$(printf '%s\n%s\n' "$base_ver" "$head_ver" | sort -V | tail -1)
+          if [ "$highest" != "$head_ver" ]; then
+            echo "::error file=${PLUGIN}::Version must increase: ${base_ver} -> ${head_ver} is not higher."
+            exit 1
+          fi
+
+          if [ -z "$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- "$CHANGELOG")" ]; then
+            echo "::error file=${CHANGELOG}::Version bumped to ${head_ver} but ${CHANGELOG} was not updated. Add a changelog entry in the same PR. See CLAUDE.md."
+            exit 1
+          fi
+
+          echo "OK: version ${base_ver} -> ${head_ver} with a changelog update."
